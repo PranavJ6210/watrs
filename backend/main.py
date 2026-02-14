@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from api.v1.feedback import router as feedback_router
 from api.v1.recommendations import router as recommendations_router
 from core.config import get_settings
 from core.database import initialize_db
@@ -60,6 +61,7 @@ setup_security(app)
 
 # ── Routers ─────────────────────────────────────────────────────────────────
 app.include_router(recommendations_router, prefix="/api/v1")
+app.include_router(feedback_router, prefix="/api/v1")
 
 
 # ── Health check ────────────────────────────────────────────────────────────

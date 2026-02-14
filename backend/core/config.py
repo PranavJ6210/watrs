@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     MONGODB_URL: str
 
     # ── External APIs ───────────────────────────────────────────────────
-    OPENWEATHER_API_KEY: str
+    WEATHERAPI_API_KEY: str = ""
     GOOGLE_PLACES_API_KEY: str
 
     # ── Cloud Storage ───────────────────────────────────────────────────

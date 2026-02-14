@@ -12,6 +12,7 @@ Pipeline:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, TYPE_CHECKING
 
 import httpx
@@ -35,9 +36,24 @@ W_HIDDEN = 0.3
 INACCESSIBLE_ROAD = "boat_only"
 MIN_COMFORT_SCORE = 0.4
 
+# Month abbreviations for weather_comfort_history dict lookup
+_MONTH_ABBR = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+]
+
+
+def _current_month_comfort(history: Dict[str, float]) -> float:
+    """Look up the current month's comfort from the monthly dict, default 0.5."""
+    month_key = _MONTH_ABBR[datetime.utcnow().month - 1]
+    return history.get(month_key, 0.5)
+
 # ── Weather API ─────────────────────────────────────────────────────────────
-OWM_BASE_URL = "https://api.openweathermap.org/data/2.5/weather"
+WEATHER_API_URL = "http://api.weatherapi.com/v1/current.json"
 WEATHER_TIMEOUT = 2.0  # seconds
+
+# Adverse condition keywords (lowercased) that halve the comfort score
+_ADVERSE_CONDITIONS = {"rain", "heavy rain", "thunderstorm", "drizzle", "torrential rain"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -81,18 +97,17 @@ def _vibe_score(user_tags: List[str], place_tags: List[str]) -> float:
 
 def _comfort_from_weather(weather_data: Dict[str, Any]) -> float:
     """
-    Derive a 0-1 comfort score from OpenWeatherMap response.
+    Derive a 0–1 comfort score from a WeatherAPI.com ``current.json`` response.
 
-    Formula: ``clamp(1.0 - abs(temp - 22) / 28, 0, 1)``
-    Halved if rain or thunderstorm conditions are detected.
+    Formula: ``clamp(1.0 - abs(temp_c - 22) / 28, 0, 1)``
+    Halved if adverse weather conditions are detected.
     """
     try:
-        temp = weather_data["main"]["temp"]  # °C (units=metric)
+        temp = weather_data["current"]["temp_c"]
         score = max(0.0, min(1.0, 1.0 - abs(temp - 22.0) / 28.0))
 
-        # Penalize adverse conditions
-        conditions = {w.get("main", "").lower() for w in weather_data.get("weather", [])}
-        if conditions & {"rain", "thunderstorm", "drizzle"}:
+        condition_text = weather_data["current"]["condition"]["text"].lower()
+        if any(adv in condition_text for adv in _ADVERSE_CONDITIONS):
             score *= 0.5
 
         return round(score, 4)
@@ -102,19 +117,25 @@ def _comfort_from_weather(weather_data: Dict[str, Any]) -> float:
 
 async def _fetch_live_weather(lat: float, lon: float) -> Dict[str, Any] | None:
     """
-    Call OpenWeatherMap with a strict 2-second timeout.
+    Call WeatherAPI.com with a strict 2-second timeout.
 
-    Returns the parsed JSON dict or ``None`` on any failure (circuit breaker).
+    **Guard clause**: If the API key is missing or empty the circuit breaker
+    trips immediately — no network call is attempted.
+
+    Returns the parsed JSON dict or ``None`` on any failure.
     """
+    api_key = settings.WEATHERAPI_API_KEY
+    if not api_key or not api_key.strip():
+        logger.warning("WEATHERAPI_API_KEY is missing/empty — circuit breaker tripped")
+        return None
+
     params = {
-        "lat": lat,
-        "lon": lon,
-        "appid": settings.OPENWEATHER_API_KEY,
-        "units": "metric",
+        "key": api_key,
+        "q": f"{lat},{lon}",
     }
     try:
         async with httpx.AsyncClient(timeout=WEATHER_TIMEOUT) as client:
-            resp = await client.get(OWM_BASE_URL, params=params)
+            resp = await client.get(WEATHER_API_URL, params=params)
             resp.raise_for_status()
             return resp.json()
     except (httpx.HTTPError, httpx.TimeoutException, Exception) as exc:
@@ -174,8 +195,8 @@ async def get_recommendations(
             continue
 
         vibe = _vibe_score(user_tags, place.watrs_tags)
-        # Initial weather score from history (will be refined for top-5)
-        weather = place.metrics.weather_comfort_history
+        # Initial weather score from monthly history (will be refined for top-5)
+        weather = _current_month_comfort(place.metrics.weather_comfort_history)
         hidden = place.metrics.hidden_percentile
 
         # Preliminary comfort check against history
@@ -208,8 +229,8 @@ async def get_recommendations(
         if weather_data is not None:
             comfort = _comfort_from_weather(weather_data)
         else:
-            # Circuit breaker: fallback to stored history
-            comfort = place.metrics.weather_comfort_history
+            # Circuit breaker: fallback to current month's stored history
+            comfort = _current_month_comfort(place.metrics.weather_comfort_history)
             entry["weather_fallback"] = True
             if "Live weather unavailable" not in warnings:
                 warnings.append("Live weather unavailable — using historical comfort data for some results")

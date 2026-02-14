@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, List, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from bson import ObjectId
 from pydantic import (
@@ -97,6 +97,7 @@ class RoadAccessLevel(str, Enum):
     FOURWD_ONLY = "4wd_only"
     FOOT_ONLY = "foot_only"
     BOAT_ONLY = "boat_only"
+    OFF_ROAD = "off_road"
 
 
 class SafetyRating(str, Enum):
@@ -126,6 +127,10 @@ class SafetyMetadata(BaseModel):
         default=None,
         description="Free-text safety notes",
     )
+    verified_by_human: bool = Field(
+        default=True,
+        description="False when a SAFETY_ALERT flags this place for review",
+    )
 
 
 class PlaceMetrics(BaseModel):
@@ -148,11 +153,13 @@ class PlaceMetrics(BaseModel):
         le=5.0,
         description="Average user rating (0–5)",
     )
-    weather_comfort_history: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Historical weather comfort score (fallback when live weather unavailable)",
+    weather_comfort_history: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Monthly comfort scores {\"Jan\": 0.8, …} — fallback when live weather unavailable",
+    )
+    community_trust_score: float = Field(
+        default=0.0,
+        description="Community trust score modified by LIKE (+0.1) / DISLIKE (-0.1) feedback",
     )
 
 
@@ -178,6 +185,7 @@ class Place(BaseModel):
             "example": {
                 "name": "Hampi Ruins",
                 "description": "UNESCO World Heritage Site in Karnataka",
+                "image_url": "https://unsplash.com/photos/example",
                 "location": {
                     "type": "Point",
                     "coordinates": [76.4610, 15.3350],
@@ -207,6 +215,12 @@ class Place(BaseModel):
     # ── Core fields ─────────────────────────────────────────────────────
     name: str = Field(..., min_length=1, max_length=256)
     description: Optional[str] = Field(default=None, max_length=2000)
+    image_url: str = Field(..., description="Image URL (Unsplash, Google, etc.)")
+
+    # ── External references (hybrid — all optional) ─────────────────────
+    google_place_id: Optional[str] = Field(default=None, description="Google Places ID")
+    google_rating: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    review_count: int = Field(default=0, ge=0)
 
     # ── Geospatial ──────────────────────────────────────────────────────
     location: GeoJSONPoint
